@@ -1,0 +1,4 @@
+/target
+
+*.sierra
+*.cairo_dec
