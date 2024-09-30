@@ -29,7 +29,7 @@ Generates:
 
 pub fn func_10915670729824419620(v0: RangeCheck, v1: u32, v2: u32) -> (RangeCheck, Enum<(u32), ((), Array<felt252>)>) {
     let (v6 : u32, v6_overflowed: bool) = v1 + v2;
-    if v6_overflowed {
+    if !v6_overflowed {
         let v3: RangeCheck = v0;
         let v7: (u32) = Struct {
         	field_0: v4,
@@ -58,10 +58,10 @@ pub fn func_10915670729824419620(v0: RangeCheck, v1: u32, v2: u32) -> (RangeChec
 
 pub fn func_2293170801303492997(v0: RangeCheck, v1: u32, v2: u32, v3: u32) -> (RangeCheck, Enum<(u32), ((), Array<felt252>)>) {
     let (v7 : u32, v7_overflowed: bool) = v1 - v2;
-    if v7_overflowed {
+    if !v7_overflowed {
         let v4: RangeCheck = v0;
         let (v11 : u32, v11_overflowed: bool) = v5 - v3;
-        if v11_overflowed {
+        if !v11_overflowed {
             let v8: RangeCheck = v4;
             let v12: (u32) = Struct {
             	field_0: v9,

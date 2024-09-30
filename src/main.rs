@@ -264,7 +264,7 @@ pub fn build_statement(
                             rhs.id
                         ));
 
-                        buffunc.push_str(&format!("{tabs}if v{:?}_overflowed {{\n", outvarid.id));
+                        buffunc.push_str(&format!("{tabs}if !v{:?}_overflowed {{\n", outvarid.id));
 
                         {
                             let range_check_id = gen_invocation.branches[0].results[0].id;
