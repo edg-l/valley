@@ -2,13 +2,14 @@ use std::{collections::HashMap, error::Error, path::PathBuf};
 
 use cairo_lang_sierra::{
     extensions::{
+        array::ArrayConcreteLibfunc,
         core::{CoreConcreteLibfunc, CoreLibfunc, CoreType, CoreTypeConcrete},
         enm::EnumConcreteLibfunc,
         gas::GasConcreteLibfunc,
         int::{unsigned::UintConcrete, IntOperator},
         mem::MemConcreteLibfunc,
         structure::StructConcreteLibfunc,
-        ConcreteLibfunc, ConcreteType,
+        ConcreteLibfunc,
     },
     ids::{ConcreteTypeId, VarId},
     program::{GenStatement, GenericArg, StatementIdx},
@@ -89,13 +90,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         let mut varids: HashMap<VarId, ()> = HashMap::new();
 
-        for st in &program.statements[func.entry_point.0..] {
-            if !build_statement(&mut buffunc, &reg, st, &mut varids)? {
-                break;
-            }
-        }
+        build_statement(
+            &mut buffunc,
+            &reg,
+            func.entry_point,
+            &program.statements,
+            &mut varids,
+            1,
+        )?;
 
-        buffunc.push_str("}\n");
+        buffunc.push_str("}\n\n");
 
         buf.push_str(&buffunc);
     }
@@ -107,9 +111,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 pub fn build_statement(
     buffunc: &mut String,
     reg: &ProgramRegistry<CoreType, CoreLibfunc>,
-    st: &GenStatement<StatementIdx>,
+    statement_idx: StatementIdx,
+    statements: &[GenStatement<StatementIdx>],
     varids: &mut HashMap<VarId, ()>,
-) -> Result<bool, Box<dyn Error>> {
+    depth_level: usize,
+) -> Result<(), Box<dyn Error>> {
+    let st = &statements[statement_idx.0];
+    let tabs: String = "\t".chars().cycle().take(depth_level).collect();
+
     match st {
         GenStatement::Invocation(gen_invocation) => {
             let lb = reg.get_libfunc(&gen_invocation.libfunc_id)?;
@@ -120,13 +129,44 @@ pub fn build_statement(
                 }
             }
 
-            dbg!(&gen_invocation.args);
-
             match lb {
-                CoreConcreteLibfunc::ApTracking(_) => {}
-                CoreConcreteLibfunc::Array(_) => todo!(),
+                CoreConcreteLibfunc::ApTracking(_) => {
+                    assert_eq!(gen_invocation.branches.len(), 1);
+                    let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                    build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
+                }
+                CoreConcreteLibfunc::Array(selector) => match selector {
+                    ArrayConcreteLibfunc::New(info) => {
+                        let outvarid = &gen_invocation.branches[0].results[0];
+                        let out_ty = &info.branch_signatures()[0].vars[0].ty;
+
+                        buffunc.push_str(&format!(
+                            "{tabs}let v{:?}: {} = Array::new();\n",
+                            outvarid.id,
+                            get_type_name(reg, out_ty)?
+                        ));
+
+                        assert_eq!(gen_invocation.branches.len(), 1);
+                        let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
+                    }
+                    ArrayConcreteLibfunc::SpanFromTuple(_) => todo!(),
+                    ArrayConcreteLibfunc::TupleFromSpan(_) => todo!(),
+                    ArrayConcreteLibfunc::Append(_) => todo!(),
+                    ArrayConcreteLibfunc::PopFront(_) => todo!(),
+                    ArrayConcreteLibfunc::PopFrontConsume(_) => todo!(),
+                    ArrayConcreteLibfunc::Get(_) => todo!(),
+                    ArrayConcreteLibfunc::Slice(_) => todo!(),
+                    ArrayConcreteLibfunc::Len(_) => todo!(),
+                    ArrayConcreteLibfunc::SnapshotPopFront(_) => todo!(),
+                    ArrayConcreteLibfunc::SnapshotPopBack(_) => todo!(),
+                    ArrayConcreteLibfunc::SnapshotMultiPopFront(_) => todo!(),
+                    ArrayConcreteLibfunc::SnapshotMultiPopBack(_) => todo!(),
+                },
                 CoreConcreteLibfunc::BranchAlign(_) => {
-                    // todo, if here?
+                    assert_eq!(gen_invocation.branches.len(), 1);
+                    let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                    build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
                 }
                 CoreConcreteLibfunc::Bool(_) => todo!(),
                 CoreConcreteLibfunc::Box(_) => todo!(),
@@ -134,14 +174,24 @@ pub fn build_statement(
                 CoreConcreteLibfunc::Circuit(_) => todo!(),
                 CoreConcreteLibfunc::Coupon(_) => todo!(),
                 CoreConcreteLibfunc::CouponCall(_) => todo!(),
-                CoreConcreteLibfunc::Drop(_) => todo!(),
-                CoreConcreteLibfunc::Dup(info) => {
+                CoreConcreteLibfunc::Drop(_) => {
+                    let args = &gen_invocation.args;
+                    buffunc.push_str(&format!("{tabs}drop(v{:?});\n", args[0].id,));
+
+                    assert_eq!(gen_invocation.branches.len(), 1);
+                    let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                    build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
+                }
+                CoreConcreteLibfunc::Dup(_info) => {
                     todo!()
                 }
                 CoreConcreteLibfunc::Ec(_) => todo!(),
                 CoreConcreteLibfunc::Felt252(_) => todo!(),
                 CoreConcreteLibfunc::Const(info) => {
-                    todo!()
+                    let outvarid = &gen_invocation.branches[0].results[0];
+                    let out_ty = get_type_name(reg, &info.branch_signatures()[0].vars[0].ty)?;
+
+                    buffunc.push_str(&format!("{tabs}let v{:?} = {out_ty};\n", outvarid.id,));
                 }
                 CoreConcreteLibfunc::FunctionCall(_) => todo!(),
                 CoreConcreteLibfunc::Gas(selector) => match selector {
@@ -157,7 +207,6 @@ pub fn build_statement(
                     UintConcrete::Const(_) => todo!(),
                     UintConcrete::Operation(info) => {
                         let outvarid = &gen_invocation.branches[1].results[1];
-                        let args = &gen_invocation.args;
                         let out_ty = &info.branch_signatures()[1].vars[1].ty;
                         let op = match info.operator {
                             IntOperator::OverflowingAdd => '+',
@@ -168,11 +217,48 @@ pub fn build_statement(
                         let rhs = &gen_invocation.args[2];
 
                         buffunc.push_str(&format!(
-                            "\tlet (v{:?}, v{:?}_overflowed) = v{:?} {op} v{:?};\n",
-                            outvarid.id, outvarid.id, lhs.id, rhs.id
+                            "{tabs}let (v{:?} : {}, v{:?}_overflowed: bool) = v{:?} {op} v{:?};\n",
+                            outvarid.id,
+                            get_type_name(reg, out_ty)?,
+                            outvarid.id,
+                            lhs.id,
+                            rhs.id
                         ));
 
-                        buffunc.push_str(&format!("if v{:?}_overflowed {{\n", outvarid.id));
+                        buffunc.push_str(&format!("{tabs}if v{:?}_overflowed {{\n", outvarid.id));
+
+                        {
+                            let range_check_id = gen_invocation.branches[0].results[0].id;
+                            let out_ty = &info.branch_signatures()[0].vars[0].ty;
+                            buffunc.push_str(&format!(
+                                "{tabs}\tlet v{}: {} = v{:?};\n",
+                                range_check_id,
+                                get_type_name(reg, out_ty)?,
+                                gen_invocation.args[0].id
+                            ));
+                        }
+
+                        assert_eq!(gen_invocation.branches.len(), 2);
+                        let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level + 1)?;
+
+                        buffunc.push_str(&format!("{tabs}}} else {{\n"));
+
+                        {
+                            let range_check_id = gen_invocation.branches[1].results[0].id;
+                            let out_ty = &info.branch_signatures()[1].vars[0].ty;
+                            buffunc.push_str(&format!(
+                                "{tabs}\tlet v{}: {} = v{:?};\n",
+                                range_check_id,
+                                get_type_name(reg, out_ty)?,
+                                gen_invocation.args[0].id
+                            ));
+                        }
+
+                        let idx = statement_idx.next(&gen_invocation.branches[1].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level + 1)?;
+
+                        buffunc.push_str(&format!("{tabs}}}\n"));
                     }
                     UintConcrete::SquareRoot(_) => todo!(),
                     UintConcrete::Equal(_) => todo!(),
@@ -193,10 +279,26 @@ pub fn build_statement(
                 CoreConcreteLibfunc::Sint64(_) => todo!(),
                 CoreConcreteLibfunc::Sint128(_) => todo!(),
                 CoreConcreteLibfunc::Mem(selector) => match selector {
-                    MemConcreteLibfunc::StoreTemp(_) => {}
-                    MemConcreteLibfunc::StoreLocal(_) => {}
-                    MemConcreteLibfunc::FinalizeLocals(_) => {}
-                    MemConcreteLibfunc::AllocLocal(info) => {}
+                    MemConcreteLibfunc::StoreTemp(_) => {
+                        assert_eq!(gen_invocation.branches.len(), 1);
+                        let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
+                    }
+                    MemConcreteLibfunc::StoreLocal(_) => {
+                        assert_eq!(gen_invocation.branches.len(), 1);
+                        let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
+                    }
+                    MemConcreteLibfunc::FinalizeLocals(_) => {
+                        assert_eq!(gen_invocation.branches.len(), 1);
+                        let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
+                    }
+                    MemConcreteLibfunc::AllocLocal(_) => {
+                        assert_eq!(gen_invocation.branches.len(), 1);
+                        let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
+                    }
                     MemConcreteLibfunc::Rename(_) => todo!(),
                 },
                 CoreConcreteLibfunc::Nullable(_) => todo!(),
@@ -213,8 +315,10 @@ pub fn build_statement(
                             // todo: get variant type, use it as :: part
 
                             buffunc.push_str(&format!(
-                                "\tlet v{:?} = Enum::Variant{:?}(",
-                                outvarid.id, variant
+                                "{tabs}let v{:?}: {} = Enum::Variant{:?}(",
+                                outvarid.id,
+                                get_type_name(reg, out_ty)?,
+                                variant
                             ));
 
                             let mut first = true;
@@ -227,6 +331,10 @@ pub fn build_statement(
                                 }
                             }
                             buffunc.push_str(");\n");
+
+                            assert_eq!(gen_invocation.branches.len(), 1);
+                            let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                            build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
                         }
                         EnumConcreteLibfunc::FromBoundedInt(_) => todo!(),
                         EnumConcreteLibfunc::Match(_) => todo!(),
@@ -239,18 +347,20 @@ pub fn build_statement(
                         let args = &gen_invocation.args;
                         let out_ty = &info.branch_signatures()[0].vars[0].ty;
 
-                        buffunc.push_str(&format!("\tlet v{:?} = Struct {{", outvarid.id));
+                        buffunc.push_str(&format!(
+                            "{tabs}let v{:?}: {} = Struct {{\n",
+                            outvarid.id,
+                            get_type_name(reg, out_ty)?
+                        ));
 
-                        let mut first = true;
-                        for arg in args {
-                            if first {
-                                buffunc.push_str(&format!("v{:?}", arg.id));
-                                first = false;
-                            } else {
-                                buffunc.push_str(&format!(", v{:?}", arg.id));
-                            }
+                        for (field, arg) in args.iter().enumerate() {
+                            buffunc.push_str(&format!("{tabs}\tfield_{field}: v{:?},\n", arg.id));
                         }
-                        buffunc.push_str("};\n");
+                        buffunc.push_str(&format!("{tabs}}};\n"));
+
+                        assert_eq!(gen_invocation.branches.len(), 1);
+                        let idx = statement_idx.next(&gen_invocation.branches[0].target);
+                        build_statement(buffunc, reg, idx, statements, varids, depth_level)?;
                     }
                     StructConcreteLibfunc::Deconstruct(_) => todo!(),
                     StructConcreteLibfunc::SnapshotDeconstruct(_) => todo!(),
@@ -268,7 +378,7 @@ pub fn build_statement(
         }
         GenStatement::Return(vec) => {
             buffunc.push('\n');
-            buffunc.push_str("\treturn ");
+            buffunc.push_str(&format!("{tabs}return "));
 
             let mut first = true;
             for id in vec {
@@ -281,11 +391,11 @@ pub fn build_statement(
             }
             buffunc.push_str(";\n");
 
-            return Ok(false);
+            return Ok(());
         }
     }
 
-    Ok(true)
+    Ok(())
 }
 
 pub fn get_type_name(
@@ -308,11 +418,11 @@ pub fn get_type_name(
 
             for x in &info.inner_data {
                 match x {
-                    GenericArg::UserType(user_type_id) => todo!(),
-                    GenericArg::Type(concrete_type_id) => todo!(),
+                    GenericArg::UserType(_user_type_id) => todo!(),
+                    GenericArg::Type(_concrete_type_id) => todo!(),
                     GenericArg::Value(big_int) => data.push_str(&big_int.to_str_radix(10)),
-                    GenericArg::UserFunc(function_id) => todo!(),
-                    GenericArg::Libfunc(concrete_libfunc_id) => todo!(),
+                    GenericArg::UserFunc(_function_id) => todo!(),
+                    GenericArg::Libfunc(_concrete_libf_unc_id) => todo!(),
                 }
             }
 
