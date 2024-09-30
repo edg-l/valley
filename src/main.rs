@@ -41,18 +41,6 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let reg: ProgramRegistry<CoreType, CoreLibfunc> = ProgramRegistry::new(&program)?;
 
-    let mut types: HashMap<u64, u64> = HashMap::new();
-
-    let mut n = 1;
-
-    for ty in &program.type_declarations {
-        let ty_name = get_type_name(&reg, &ty.id)?;
-        types.insert(ty.id.id, n);
-        n += 1;
-
-        buf.push_str(&format!("type T{n} = {ty_name};\n"));
-    }
-
     buf.push('\n');
 
     for func in &program.funcs {
